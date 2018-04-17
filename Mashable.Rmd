@@ -1,0 +1,395 @@
+---
+title: "Final Project - Classification"
+author: "Rajasekar Kamaraj"
+date: "12/10/2017"
+output: html_document
+---
+
+Libraries
+```{r}
+library(caret)
+library(AppliedPredictiveModeling)
+library(pROC)
+library(MASS)
+library(pamr)
+library(glmnet)
+```
+
+day
+```{r}
+day <- read.csv("~/Downloads/OnlineNewsPopularity.csv")
+summary(day$shares)
+```
+
+Exploring the data
+```{r}
+predictorSet <- day[ ,3:61] #removing first two rows because those 2 variables is non-predictive
+removeRows <- 1:79 # remove rows because of zero entries
+predictorSet <- predictorSet[-removeRows, ]
+  numShares <- predictorSet[, 59]
+  removeCols <- c(4,9,18,21,24,59)
+  predictorSet <- predictorSet[, -removeCols]
+  n <- nrow(predictorSet) # new number of observations
+  p <- ncol(predictorSet) # new number of predictors
+  catCols <- rep(0, times = p) # columns with categorical predictors
+  for (i in 1:p){
+    if (class(predictorSet[,i]) != 'numeric'){
+      catCols[i] = i
+    }
+  }
+  catCols <- catCols[catCols != 0]
+  catCols <- c(10:15,25:32)
+  # split predictors into categorical and continuous subsets:
+    catPredictors <- predictorSet[ ,catCols] # categorical predictors
+    contPredictors <- predictorSet[ ,-catCols] # continuous predictors
+```
+
+convert response to factor variable
+```{r}
+classCutOff1 <- 947
+classCutOff2 <- 3398
+
+numSharesFactor <- rep(0, times = n)
+for (i in 1:n){
+if (numShares[i] < classCutOff1){
+numSharesFactor[i] = 1
+}
+else if (numShares[i] >= classCutOff1 && numShares[i] < classCutOff2 )
+
+{ 
+numSharesFactor[i] = 2
+}
+
+else
+{
+numSharesFactor[i] = 3
+}
+
+}
+numSharesFactor <- factor(numSharesFactor, labels = c("low","medium","high"))
+```
+
+pre-process categorical variables:
+```{r}
+ # look for near-zero variance categorical predictors
+    nearZeroVarCols <- nearZeroVar(catPredictors)
+    length(nearZeroVarCols)
+    # no near-zero variance predictors
+  # center and scale categorical predictors
+    #catTrans <- preProcess(catPredictors, method = c("center","scale"))
+    #catPredictorsTrans <- predict(catTrans, catPredictors)
+    # if transforming change predictor concantenation from catPredictors to catPredictorsTrans
+```
+Boxplot before transformation
+```{r}
+boxplot(predictorSet$n_tokens_content, main = "Number of words in the content")
+boxplot(predictorSet$num_self_hrefs, main = "Number of links to other articles published by Mashable")
+
+boxplot(predictorSet$num_keywords, main = "Number of keywords in the metadata")
+
+boxplot(predictorSet$LDA_04, main = "Closeness to LDA topic 4")
+
+boxplot(predictorSet$abs_title_subjectivity, main = "Absolute subjectivity level")
+```
+
+Boxplot after transformation
+```{r}
+boxplot(contPredictorsTrans$n_tokens_content, main = "Number of words in the content")
+boxplot(contPredictorsTrans$num_self_hrefs, main = "Number of links to other articles published by Mashable")
+
+boxplot(contPredictorsTrans$num_keywords, main = "Number of keywords in the metadata")
+
+boxplot(contPredictorsTrans$LDA_04, main = "Closeness to LDA topic 4")
+
+boxplot(contPredictorsTrans$abs_title_subjectivity, main = "Absolute subjectivity level")
+```
+
+
+pre-process continuous predictors
+```{r}
+  # remove correlated predictors
+    contPredictorCor <- cor(contPredictors)
+    highCorrCols <- findCorrelation(contPredictorCor, cutoff = 0.9)
+    length(highCorrCols)
+    contPredictorsMinHighCorr <- contPredictors[, -highCorrCols]
+```
+
+transform predictors (Box-Cox)
+```{r}
+contTrans <- preProcess(contPredictorsMinHighCorr, method = "YeoJohnson") 
+    contPredictorsTrans <- predict(contTrans, contPredictorsMinHighCorr)
+```
+
+
+
+recombine predictor sets and split day
+```{r}
+  combPredictors <- cbind(catPredictors, contPredictorsTrans)
+  set.seed(1)
+  trainRows <- createDataPartition(numShares, p = 0.80, list = FALSE)
+  trainX <- combPredictors[trainRows, ]
+  testX <- combPredictors[-trainRows, ]
+  trainY <- numSharesFactor[trainRows]
+  testY <- numSharesFactor[trainRows]
+```
+
+resampling method
+```{r}
+set.seed(1)
+  ctrl <- trainControl(method = "LGOCV",
+                       summaryFunction = defaultSummary,
+                       classProbs = TRUE)
+```
+
+Linear Classification Models - GLM
+```{r,warning=FALSE}
+set.seed(1)
+onlineGLM <- train(trainX, trainY,
+                method = "multinom", preProcess = c("center","scale"),
+                metric = "Accuracy",
+                trControl = ctrl)
+onlineGLM
+plot(onlineGLM)
+```
+
+
+Linear Classification Models - LDA
+```{r,warning=FALSE}
+set.seed(1)
+onlineLDA <- train(trainX, trainY,
+                method = "lda",
+                preProcess = c("center","scale"),
+                metric = "Accuracy",
+                trControl = ctrl)
+onlineLDA
+```
+
+Prediction - LDA
+```{r}
+LDApredict <- predict(onlineLDA, newday = testX)
+postResample(pred = LDApredict, obs = testY)
+```
+
+Linear Classification Models - PLS
+```{r,warning=FALSE}
+set.seed(1)
+onlinePLS <- train(trainX, trainY,
+                 method = "pls",
+                 tuneGrid = expand.grid(.ncomp = 1:4),
+                 preProc = c("center","scale"),
+                 metric = "Accuracy",
+                 trControl = ctrl)
+onlinePLS
+plot(onlinePLS)
+```
+
+Prediction - PLS
+```{r}
+PLSpredict <- predict(onlinePLS, newdata = testX)
+postResample(pred = PLSpredict, obs = testY)
+```
+
+Linear Classification Models - GLMNet
+```{r,warning=FALSE}
+set.seed(1)
+onlineglmnGrid <- expand.grid(.alpha = c(0, .1, .2, .4, .6, .8, 1),
+                        .lambda = seq(.01, .2, length = 10))
+onlineGLMNET <- train(trainX, trainY,
+                   method = "glmnet",
+                   tuneGrid = onlineglmnGrid,
+                   preProc = c("center", "scale"),
+                   metric = "Accuracy",
+                   trControl = ctrl)
+onlineGLMNET
+plot(onlineGLMNET)
+```
+
+
+Linear Classification Models - NSC
+```{r,warning=FALSE}
+set.seed(1)
+onlinenscGrid <- data.frame(.threshold = seq(0,4, by=0.2))
+onlineNSC <- train(trainX, trainY,
+                  method = "pam",
+                  preProc = c("center", "scale"),
+                  tuneGrid = onlinenscGrid,
+                  metric = "Accuracy",
+                  trControl = ctrl)
+
+onlineNSC
+plot(onlineNSC)
+```
+
+Prediction - NSC
+```{r}
+NSCpredict <- predict(onlineNSC, newday = testX)
+postResample(pred = NSCpredict, obs = testY)
+```
+
+Linear Classification Models - SparseLDA
+```{r}
+set.seed(1)
+library(sparseLDA)
+onlinesparseLDAGridx  <-  expand.grid(.NumVars = -3, .lambda = 0.01)
+onlinesparseLda <- train(trainX, trainY,
+                         method = "sparseLDA",
+                         tuneGrid = onlinesparseLDAGridx ,
+                         trControl = ctrl,
+                         metric = "Accuracy", 
+                         importance=TRUE,
+                         preProc = c("center", "scale"))
+onlinesparseLda
+plot(onlinesparseLda)
+```
+
+Prediction - SparseLDA
+```{r}
+sparseLDApredict <- predict(onlinesparseLda, newday = testX)
+postResample(pred = sparseLDApredict, obs = testY)
+```
+
+Non-Linear Classification Models - Mixture discriminant analysis (MDA)
+```{r,warning=FALSE}
+set.seed(1)
+onlinemdaGrid <- expand.grid(.subclasses = 1:3)
+onlineMDA <- train(trainX[,1:10], trainY,
+                method = "mda",
+                metric = "Accuracy", tuneGrid = onlinemdaGrid,
+                preProcess = c("center","scale"),
+                trControl = ctrl)
+onlineMDA
+plot(onlineMDA)
+```
+
+Non-Linear Classification Models - Quadratic discriminant analysis (QDA)
+```{r,warning=FALSE}
+library(MASS)
+set.seed(1)
+#a<-dim(trainX)[2]
+onlineqda <- train(trainX[,1:10], trainY,
+                metric = "Accuracy", method = "qda",
+                preProcess = c("center","scale"),
+                trControl = ctrl)
+onlineqda
+```
+
+Non-Linear Classification Models - Regularized discriminant analysis (RDA)
+```{r,warning=FALSE}
+library(klaR)
+set.seed(1)
+#a<-dim(trainX)[2]
+onlinerda <- train(trainX, trainY,
+                metric = "Accuracy", method = "rda",
+                preProcess = c("center","scale"),
+                trControl = ctrl,gamma = 0.05, lambda = 0.2)
+onlinerda
+```
+
+
+Non-Linear Classification Models - Neural Networks
+```{r}
+set.seed(1)
+onlinennetGrid <- expand.grid(.size = 5, .decay = 0.01)
+onlinennet <- train(trainX, trainY,
+                 method = "nnet",
+                 metric = "Accuracy",
+                 preProc = c("center", "scale"),
+                 tuneGrid = onlinennetGrid,
+                 trace = FALSE,
+                 maxit = 500,MaxNWts = 25585,
+                 trControl = ctrl)
+onlinennet
+```
+
+Non-Linear Classification Models - Flexible Discriminant Analysis (FDA)
+```{r}
+set.seed(1)
+onlinefdaGrid <- expand.grid(.degree = 1:2, .nprune = 2:9)
+onlineFDA <- train(trainX, trainY,
+                   method = "fda",
+                   tuneGrid = onlinefdaGrid,
+                   trControl = ctrl)
+onlineFDA
+plot(onlineFDA)
+```
+
+Non-Linear Classification Models - K-Nearest Neighbors (KNN) 
+```{r}
+set.seed(1)
+onlineKNN <- train(trainX, trainY,
+                method = "knn",
+                metric = "Accuracy",
+                preProc = c("center", "scale"),
+                tuneGrid = data.frame(.k = 1:10),
+                trControl = ctrl)
+
+onlineKNN
+plot(onlineKNN)
+```
+
+Non-Linear Classification Models - Naive Bayes (NB)
+```{r,warning=FALSE}
+set.seed(1)
+library(e1071)
+library(klaR)
+onlinenb<-train(trainX, trainY,
+         method = "nb",
+         preProcess = c("center","scale"),
+         trControl = ctrl,fl=2,usekernal = TRUE)
+onlinenb
+```
+
+Nonlinear Discriminant Analysis - Support Vector Machines (SVM)
+```{r,warning=FALSE}
+library(kernlab)
+library(caret)
+onlinesigmaRangeReduced <- sigest(as.matrix(trainX))
+onlinesvmRGridReduced <- expand.grid(.sigma = onlinesigmaRangeReduced[1],
+                                 .C = 2^(-1))
+onlineSVM <- train(trainX, trainY,
+                   method = "svmRadial",
+                   metric = "Accuracy",
+                   preProc = c("center", "scale"),
+                   tuneGrid = onlinesvmRGridReduced,
+                   fit = FALSE,
+                   trControl = ctrl)
+onlineSVM
+```
+
+****Top 3 model***
+
+Prediction - GLMNET
+```{r,warning=FALSE}
+library(e1071)
+GLMNETpredict <- predict(onlineGLMNET, newdata = testX)
+confusionMatrix(pred = GLMNETpredict, obs = testY)
+```
+
+Prediction - GLM
+```{r,warning=FALSE}
+GLMpredict <- predict(onlineGLM, newdata = testX)
+postResample(pred = GLMpredict, obs = testY)
+```
+
+Prediction - Naive Bayes (NB)
+```{r,warning=FALSE}
+FDApredict <- predict(onlineFDA, newdata = testX)
+postResample(pred = FDApredict, obs = testY)
+```
+
+***Variable importance***
+```{r}
+GLMNETvarimp <- varImp(onlineGLMNET, scale = FALSE)
+plot(GLMNETvarimp,top = 10)
+```
+
+***Plot for best model***
+```{r}
+plot(onlineGLMNET)
+```
+
+Confusion Matrix
+```{r}
+table(pred = GLMNETpredict, obs = testY)
+```
+
